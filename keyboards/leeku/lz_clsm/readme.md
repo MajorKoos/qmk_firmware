@@ -1,11 +1,14 @@
 # LZ CLSm
 
+![LZ CLSm](https://i.imgur.com/eIMApCM.jpg)
+
 The LeeKu LZ CLSm, an ATmega32A (V-USB / bootloadHID) keyboard. RGB underglow, the
 single-level backlight and the lock LEDs are driven by an on-board "L3" companion
 chip over i2c.
 
 * Keyboard Maintainer: [MajorKoos](https://github.com/MajorKoos)
 * Hardware Supported: LZ CLSm PCB, ATmega32A
+* Hardware Availability: [LZ CLSm (Classic 75) group buy](https://geekhack.org/index.php?topic=91775.0)
 
 ## Hardware
 
@@ -15,7 +18,7 @@ chip over i2c.
        [1]     SDA (i2c to L3 companion)
        [2:7]   row[0:5]
     PD [0]     USB D+/- level shifter enable (high 3.3 V, low 5 V)
-       [1]     PS/2 clock pull-up
+       [1]     PS/2 clock line
 
 Signal direction: row -> col (`COL2ROW`).
 
@@ -31,8 +34,8 @@ Flashing example for this keyboard:
 
 Enter the bootloader (bootloadHID) in either of these ways:
 
-* **Physical reset**: hold the <kbd>`</kbd> (grave) key while plugging in the USB cable.
-* **Keycode reset**: hold <kbd>`</kbd> while pressing the `QK_BOOT` keycode.
+* **Bootloader key**: hold the <kbd>`</kbd> (grave/Escape position) key while plugging in the USB cable.
+* **Keycode reset**: press the key mapped to `QK_BOOT`, if available in your keymap.
 
 See the [build environment setup](https://docs.qmk.fm/#/getting_started_build_tools) and the
 [make instructions](https://docs.qmk.fm/#/getting_started_make_guide) for more information.

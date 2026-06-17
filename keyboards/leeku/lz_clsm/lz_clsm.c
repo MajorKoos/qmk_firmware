@@ -16,37 +16,28 @@
  *  RGB underglow, the single-level backlight and the three lock LEDs; QMK
  *  talks to it over i2c using the "tinycmd" packet protocol below.
  *
- *  STABILITY NOTE (this is the whole point of the port):
- *  The original firmware issued these i2c transfers *synchronously* from the
- *  rgblight/backlight/lock callbacks, with a 100 ms timeout and retries. On a
- *  V-USB (software USB) board those callbacks run in the same cooperative loop
- *  as usbPoll(); a single stalled transfer therefore blocked USB servicing for
- *  long enough that the host either dropped the device (hang) or never received
- *  the key-release report (stuck / repeating keys).
- *
- *  Here the callbacks only update a shadow state and set a dirty flag, returning
- *  immediately. housekeeping_task_kb() then drains at most ONE bounded i2c
- *  packet per main-loop iteration, so usbPoll() always runs between transfers.
+ *  V-USB needs usbPoll() to be serviced frequently. Lighting callbacks only
+ *  update shadow state and set dirty flags; housekeeping_task_kb() then drains
+ *  at most one bounded i2c packet per main-loop iteration.
  * ------------------------------------------------------------------------- */
 
 // --- tinycmd command codes ------------------------------------------------
-#define TINY_CMD_CONFIG_F            0
-#define TINY_CMD_THREE_LOCK_F        3
-#define TINY_CMD_RGB_ALL_F           20
-#define TINY_CMD_RGB_BUFFER_F        23
-#define TINY_CMD_RGB_SET_PRESET_F    25
-#define TINY_CMD_RGB_EFFECT_SPEED_F  26
-#define TINY_CMD_LED_LEVEL_F         40
+#define TINY_CMD_CONFIG_F 0
+#define TINY_CMD_THREE_LOCK_F 3
+#define TINY_CMD_RGB_ALL_F 20
+#define TINY_CMD_RGB_BUFFER_F 23
+#define TINY_CMD_RGB_SET_PRESET_F 25
+#define TINY_CMD_RGB_EFFECT_SPEED_F 26
+#define TINY_CMD_LED_LEVEL_F 40
 #define TINY_CMD_LED_CONFIG_PRESET_F 43
 
 #define LED_EFFECT_ALWAYS 5
-#define LED_EFFECT_OFF    7
-#define RGB_EFFECT_BASIC  5
+#define RGB_EFFECT_BASIC 5
 
 #define KEY_LED_CHANNEL_ALL 0xFF
-#define LEDMODE_INDEX_MAX   3
-#define LED_BLOCK_MAX       5
-#define LEDMODE_ARRAY_SIZE  (LEDMODE_INDEX_MAX * LED_BLOCK_MAX)
+#define LEDMODE_INDEX_MAX 3
+#define LED_BLOCK_MAX 5
+#define LEDMODE_ARRAY_SIZE (LEDMODE_INDEX_MAX * LED_BLOCK_MAX)
 
 // --- tinycmd packet layouts (wire format: keep PACKED) --------------------
 typedef struct __attribute__((packed)) {
@@ -118,18 +109,18 @@ _Static_assert(sizeof(tinycmd_three_lock_req_t) == 3, "tinycmd three-lock packed
 _Static_assert(sizeof(tinycmd_led_level_req_t) == 4, "tinycmd led-level packed size mismatch");
 
 // --- shadow state ---------------------------------------------------------
-static uint8_t  l3_rgb[RGBLIGHT_LED_COUNT * 3]; // wire order: g,r,b per LED (see l3_rgb_set)
-static uint8_t  l3_backlight_level = 0;
-static uint8_t  l3_lock            = 0;
-static bool     l3_rgb_dirty       = false;
-static bool     l3_backlight_dirty = false;
-static bool     l3_lock_dirty      = false;
-static bool     l3_ready           = false;
+static uint8_t l3_rgb[RGBLIGHT_LED_COUNT * 3]; // wire order: g,r,b per LED (see l3_rgb_set)
+static uint8_t l3_backlight_level = 0;
+static uint8_t l3_lock            = 0;
+static bool    l3_rgb_dirty       = false;
+static bool    l3_backlight_dirty = false;
+static bool    l3_lock_dirty      = false;
+static bool    l3_ready           = false;
 
 // Light back-off so an absent/wedged companion is retried at a bounded rate
 // instead of being hammered every loop.
-static bool     l3_failed     = false;
-static uint16_t l3_failed_at  = 0;
+static bool     l3_failed    = false;
+static uint16_t l3_failed_at = 0;
 #define L3_RETRY_BACKOFF_MS 100
 
 static bool l3_send(const void *pkt, uint8_t len) {
@@ -167,7 +158,10 @@ static void l3_configure(void) {
     tinycmd_rgb_all_req_t off = {
         .cmd_code = TINY_CMD_RGB_ALL_F,
         .pkt_len  = sizeof(off),
-        .on = 0, .g = 0, .r = 0, .b = 0,
+        .on       = 0,
+        .g        = 0,
+        .r        = 0,
+        .b        = 0,
     };
     l3_send(&off, off.pkt_len);
     wait_ms(2);
@@ -215,16 +209,9 @@ static void l3_task(void) {
         }
         return;
     }
-    // The RGB buffer is the largest packet (4 + 14*3 = 46 bytes) and is sent as a
-    // single atomic i2c_transmit - the same approach as core's own i2c WS2812
-    // driver (platforms/avr/drivers/ws2812_i2c.c), which transmits the whole LED
-    // buffer in one call. A healthy companion ACKs each byte in microseconds, so
-    // the packet completes in ~1 ms. The per-byte L3_I2C_TIMEOUT bounds a wedged
-    // bus, i2c_transmit aborts on the first failed byte, and l3_failed backoff
-    // then suppresses retries - so this cannot sit and spin like the original
-    // firmware did. The packet is intentionally NOT split mid-transfer: aborting
-    // partway would desync the companion's packet parser. (A bounded chunked
-    // update via num/offset is possible if a companion ever needs it.)
+    // The RGB buffer is the largest packet (4 + 14*3 = 46 bytes). Keep it as a
+    // single i2c transaction so the companion's packet parser stays in sync; the
+    // timeout and retry backoff bound failures on a wedged bus.
     if (l3_rgb_dirty) {
         tinycmd_rgb_buffer_req_t p = {.cmd_code = TINY_CMD_RGB_BUFFER_F, .pkt_len = sizeof(p), .num = RGBLIGHT_LED_COUNT, .offset = 0};
         memcpy(p.data, l3_rgb, sizeof(p.data));
@@ -258,7 +245,10 @@ static void l3_rgb_set_all(uint8_t r, uint8_t g, uint8_t b) {
     }
 }
 
-static void l3_rgb_flush(void) { l3_rgb_dirty = true; } // non-blocking: drained later
+static void l3_rgb_flush(void) {
+    // Non-blocking: drained later from housekeeping_task_kb().
+    l3_rgb_dirty = true;
+}
 
 const rgblight_driver_t rgblight_driver = {
     .init          = l3_rgb_init,
@@ -270,7 +260,9 @@ const rgblight_driver_t rgblight_driver = {
 
 // --- single-level backlight (custom driver) ------------------------------
 #ifdef BACKLIGHT_ENABLE
-void backlight_init_ports(void) {} // companion-driven; no local pins to set up
+void backlight_init_ports(void) {
+    // Companion-driven; no local pins to set up.
+}
 
 void backlight_set(uint8_t level) {
     l3_backlight_level = level;
@@ -300,9 +292,9 @@ bool led_update_kb(led_t led_state) {
 
 // --- keyboard hooks -------------------------------------------------------
 void keyboard_pre_init_kb(void) {
-    // PD0: USB D+/- level-shifter enable, PD1: PS/2 clock pull-up. These are
-    // board control pins that QMK's matrix init does not manage, and they must
-    // be set before USB comes up. (Matrix pins on PA/PB/PC are owned by QMK.)
+    // Preserve the LeeKu port-D startup state before USB comes up. PD0/PD1 are
+    // board control pins; PD4-PD7 keep pull-ups enabled. Matrix pins are on
+    // PA/PB/PC and are owned by QMK.
     DDRD  = 0x03;
     PORTD = 0xF1;
 
